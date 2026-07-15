@@ -121,14 +121,19 @@ def merge(
 
 def resolve_player(
     cur,
-    record: PlayerSeasonRecord,
+    record: PlayerSeasonRecord | Any,
     index: dict[str, int],
 ) -> int:
     """Map a source record to an internal player_id, creating players /
     source_player_map rows as needed. `index` is a canonical_name -> player_id
     cache seeded from `players` at run start and kept up to date here, so
     RealGM rows match existing API players without a canonical column in the
-    schema (a scale tradeoff — noted in the writeup)."""
+    schema (a scale tradeoff — noted in the writeup).
+
+    Only needs `record.source`, `.source_key`, `.canonical_name`, `.full_name`,
+    `.position` — any record exposing those works, not just PlayerSeasonRecord.
+    LiveBoxRecord (M7) reuses this unmodified, proving the identity seam
+    absorbs a third source with zero code change."""
     cur.execute(
         "SELECT player_id FROM source_player_map WHERE source = %s AND source_key = %s",
         (record.source.value, record.source_key),

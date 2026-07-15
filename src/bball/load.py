@@ -19,9 +19,10 @@ from typing import Iterable
 
 from psycopg.types.json import Jsonb
 
+from bball.adapters.live import extract_snapshot
 from bball.adapters.realgm import RealGMAdapter
 from bball.adapters.wisely_api import WiselyApiAdapter
-from bball.models import PlayerSeasonRecord, Rejection, Source
+from bball.models import GameRecord, LiveBoxRecord, PlayerSeasonRecord, Rejection, Source
 from bball.normalize import canonical_name
 from bball.resolve import merge, resolve_player
 
@@ -144,4 +145,86 @@ def run_ingest(conn, sources: Iterable[Source], data_dir: Path) -> dict:
         "conflicts_total": total_conflicts,
         "rejections_this_run": rejection_count,
         "rejections_total": total_rejections,
+    }
+
+
+# --- Bonus: live incremental ingest (M7) ------------------------------------
+
+_GAME_UPSERT_SQL = """
+    INSERT INTO games (game_id, status, period, clock, home_team, away_team,
+                        home_score, away_score, updated_at)
+    VALUES (%(game_id)s, %(status)s, %(period)s, %(clock)s, %(home_team)s, %(away_team)s,
+            %(home_score)s, %(away_score)s, %(updated_at)s)
+    ON CONFLICT (game_id) DO UPDATE SET
+        status = EXCLUDED.status, period = EXCLUDED.period, clock = EXCLUDED.clock,
+        home_score = EXCLUDED.home_score, away_score = EXCLUDED.away_score,
+        updated_at = EXCLUDED.updated_at
+    WHERE EXCLUDED.updated_at >= games.updated_at
+"""
+
+_PLAYER_GAME_STATS_UPSERT_SQL = """
+    INSERT INTO player_game_stats (game_id, player_id, team, min, pts, fgm, fga, tpm, tpa,
+                                    ftm, fta, reb, ast, stl, blk, tov, pf, updated_at)
+    VALUES (%(game_id)s, %(player_id)s, %(team)s, %(min)s, %(pts)s, %(fgm)s, %(fga)s,
+            %(tpm)s, %(tpa)s, %(ftm)s, %(fta)s, %(reb)s, %(ast)s, %(stl)s, %(blk)s,
+            %(tov)s, %(pf)s, %(updated_at)s)
+    ON CONFLICT (game_id, player_id) DO UPDATE SET
+        team = EXCLUDED.team, min = EXCLUDED.min, pts = EXCLUDED.pts,
+        fgm = EXCLUDED.fgm, fga = EXCLUDED.fga, tpm = EXCLUDED.tpm, tpa = EXCLUDED.tpa,
+        ftm = EXCLUDED.ftm, fta = EXCLUDED.fta, reb = EXCLUDED.reb, ast = EXCLUDED.ast,
+        stl = EXCLUDED.stl, blk = EXCLUDED.blk, tov = EXCLUDED.tov, pf = EXCLUDED.pf,
+        updated_at = EXCLUDED.updated_at
+    WHERE EXCLUDED.updated_at >= player_game_stats.updated_at
+"""
+
+
+def upsert_game(cur, game: GameRecord) -> None:
+    """WHERE excluded.updated_at >= games.updated_at makes a stale/out-of-order
+    poll a no-op: the row is matched by ON CONFLICT but left untouched."""
+    cur.execute(_GAME_UPSERT_SQL, game.model_dump())
+
+
+def upsert_player_game_stats(cur, player_id: int, box: LiveBoxRecord) -> None:
+    params = box.model_dump()
+    params["player_id"] = player_id  # box.model_dump() has no player_id key; extras are ignored
+    cur.execute(_PLAYER_GAME_STATS_UPSERT_SQL, params)
+
+
+def run_ingest_live(conn, snapshot_paths: list[Path]) -> dict:
+    """Process one or more live snapshots in order. Each poll: upsert the
+    game, then resolve + upsert every boxscore line. Home players match
+    existing wisely_api players by canonical_name (a different (source,
+    source_key) pair — proving cross-source id namespaces aren't assumed to
+    collide); away players get created on first sight and matched by
+    source_player_map on every poll after."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT player_id, full_name FROM players")
+        index = {canonical_name(name): pid for pid, name in cur.fetchall()}
+
+        snapshots_processed = 0
+        boxscore_rows_processed = 0
+        for path in snapshot_paths:
+            game, boxes = extract_snapshot(path)
+            upsert_game(cur, game)
+            snapshots_processed += 1
+            for box in boxes:
+                player_id = resolve_player(cur, box, index)
+                upsert_player_game_stats(cur, player_id, box)
+                boxscore_rows_processed += 1
+
+        cur.execute("SELECT count(*) FROM players")
+        player_count = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM games")
+        game_count = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM player_game_stats")
+        pgs_count = cur.fetchone()[0]
+
+    conn.commit()
+
+    return {
+        "players": player_count,
+        "games": game_count,
+        "player_game_stats": pgs_count,
+        "snapshots_processed": snapshots_processed,
+        "boxscore_rows_processed": boxscore_rows_processed,
     }

@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from . import db
-from .load import run_ingest
+from .load import run_ingest, run_ingest_live
 from .models import Source
 from .report import report_conflicts, report_ts
 
@@ -42,6 +42,26 @@ def ingest(source: str, data_dir: Path) -> None:
           f"| totals: conflicts={summary['conflicts_total']} rejections={summary['rejections_total']}")
 
 
+def ingest_live(path: Path | None, replay: Path | None) -> None:
+    """One poll (`path`) or a full replay in order (`--replay <dir>`, globs
+    snapshot_*.json sorted by name)."""
+    if replay is not None:
+        paths = sorted(replay.glob("snapshot_*.json"))
+        if not paths:
+            raise SystemExit(f"no snapshot_*.json files found in {replay}")
+    elif path is not None:
+        paths = [path]
+    else:
+        raise SystemExit("ingest live requires a snapshot path or --replay <dir>")
+
+    with db.connect() as conn:
+        summary = run_ingest_live(conn, paths)
+    print(f"ingest live: processed {summary['snapshots_processed']} snapshot(s), "
+          f"{summary['boxscore_rows_processed']} boxscore rows "
+          f"| totals: players={summary['players']} games={summary['games']} "
+          f"player_game_stats={summary['player_game_stats']}")
+
+
 _REPORTS = {"ts": report_ts, "conflicts": report_conflicts}
 
 
@@ -63,10 +83,17 @@ def main() -> None:
 
     p_ingest = sub.add_parser("ingest", help="extract -> resolve -> merge -> upsert one or all sources")
     p_ingest.add_argument(
-        "source", choices=["all", *_INGESTABLE_SOURCES], help="which source to ingest"
+        "source", choices=["all", *_INGESTABLE_SOURCES, "live"], help="which source to ingest"
+    )
+    p_ingest.add_argument(
+        "path", nargs="?", type=Path, default=None, help="snapshot file (source=live only)"
     )
     p_ingest.add_argument(
         "--data-dir", type=Path, default=Path("data"), help="root data directory (default: ./data)"
+    )
+    p_ingest.add_argument(
+        "--replay", type=Path, default=None,
+        help="directory of snapshots to replay in order, e.g. data/live/ (source=live only)",
     )
 
     p_report = sub.add_parser("report", help="print a verification/reconciliation report")
@@ -77,7 +104,10 @@ def main() -> None:
     if args.command == "init-db":
         init_db(reset=args.reset)
     elif args.command == "ingest":
-        ingest(args.source, args.data_dir)
+        if args.source == "live":
+            ingest_live(args.path, args.replay)
+        else:
+            ingest(args.source, args.data_dir)
     elif args.command == "report":
         report(args.kind)
 

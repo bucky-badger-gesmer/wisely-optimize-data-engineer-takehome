@@ -88,3 +88,16 @@ CREATE TABLE IF NOT EXISTS player_game_stats (
 -- Every PK/UNIQUE above already creates the btree the access patterns need.
 -- The one addition: by-player queries across games hit the non-leading PK column.
 CREATE INDEX IF NOT EXISTS idx_pgs_player ON player_game_stats (player_id);
+
+-- Read-only convenience view standing in for the (deliberately skipped) read
+-- endpoint: a resolved, provenance-annotated player-season in one row.
+CREATE OR REPLACE VIEW v_player_seasons AS
+SELECT
+  p.player_id, p.full_name, p.position,
+  s.season, s.team, s.league, s.age, s.gp, s.min_pg,
+  s.pts_pg, s.reb_pg, s.ast_pg,
+  s.fgm_pg, s.fga_pg, s.tpm_pg, s.tpa_pg, s.ftm_pg, s.fta_pg,
+  s.stl_pg, s.blk_pg, s.tov_pg,
+  s.usage_pct, s.ts_pct_api, s.ts_pct_computed, s.reb_pct, s.per, s.bpm,
+  s.field_sources, s.updated_at
+FROM players p JOIN season_stats s USING (player_id);

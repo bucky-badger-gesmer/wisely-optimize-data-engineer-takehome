@@ -78,3 +78,55 @@ class Rejection(BaseModel):
     source: Source
     raw: dict
     reason: str
+
+
+class GameRecord(BaseModel):
+    """One live-game snapshot's top-level state (bonus, M7)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    game_id: str
+    status: str
+    period: int | None = None
+    clock: str | None = None
+    home_team: str | None = None
+    away_team: str | None = None
+    home_score: int | None = None
+    away_score: int | None = None
+    updated_at: datetime
+
+
+class LiveBoxRecord(BaseModel):
+    """One player's counting-stat line in one game snapshot (bonus, M7).
+
+    Exposes the same identity attributes as PlayerSeasonRecord (source,
+    source_key, full_name, canonical_name, position) so resolve_player()
+    works on it unmodified — proving the identity seam absorbs a third
+    source with zero code change, let alone a schema change.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Source
+    source_key: str  # str(player_id)
+    full_name: str
+    canonical_name: str
+    position: str | None = None
+
+    game_id: str
+    team: str | None = None
+    min: int | None = None
+    pts: int | None = None
+    fgm: int | None = None
+    fga: int | None = None
+    tpm: int | None = None
+    tpa: int | None = None
+    ftm: int | None = None
+    fta: int | None = None
+    reb: int | None = None
+    ast: int | None = None
+    stl: int | None = None
+    blk: int | None = None
+    tov: int | None = None
+    pf: int | None = None
+    updated_at: datetime  # the snapshot's updated_at; box lines have no own timestamp
