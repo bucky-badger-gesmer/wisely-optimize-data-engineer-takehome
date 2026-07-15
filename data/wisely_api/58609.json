@@ -1,0 +1,39 @@
+{
+  "player_id": 58609,
+  "name": "Joel Hernandez",
+  "position": "G",
+  "source": "wisely_api",
+  "updated_at": "2026-07-02T01:11:00Z",
+  "seasons": [
+    {
+      "season": "2019-20",
+      "league": "Primera FEB",
+      "team": "Marin Peixegalego",
+      "age": 24,
+      "games_played": 16,
+      "minutes_per_game": 19.9,
+      "points_per_game": 7.4,
+      "rebounds_per_game": 2.0,
+      "usage_pct": 29.8,
+      "true_shooting_pct": 0.37,
+      "reb_pct": 5.7,
+      "per": 2.6,
+      "bpm": -3.2
+    },
+    {
+      "season": "2020-21",
+      "league": "Segunda FEB",
+      "team": "Manderas Sorli Benicarlo",
+      "age": 25,
+      "games_played": 10,
+      "minutes_per_game": 25.2,
+      "points_per_game": 13.1,
+      "rebounds_per_game": 3.5,
+      "usage_pct": 28.0,
+      "true_shooting_pct": 0.501,
+      "reb_pct": 8.2,
+      "per": 14.7,
+      "bpm": 5.08
+    }
+  ]
+}

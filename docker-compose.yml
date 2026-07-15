@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    # Host port 5455 avoids clashing with a locally-running Postgres on 5432.
+    ports:
+      - "5455:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: bball
+    # No named volume — this is a throwaway dev/test database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bball"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
