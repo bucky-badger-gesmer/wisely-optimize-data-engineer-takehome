@@ -25,13 +25,12 @@ from bball.models import PlayerSeasonRecord, Rejection, Source
 from bball.normalize import canonical_name
 from bball.resolve import merge, resolve_player
 
-# Column order for season_stats; ts_pct_computed is intentionally excluded
-# here (M5 extends merge()/this list to include it).
+# Column order for season_stats.
 _COLUMNS = [
     "team", "league", "age", "gp", "min_pg", "pts_pg", "reb_pg",
     "ast_pg", "fgm_pg", "fga_pg", "tpm_pg", "tpa_pg", "ftm_pg", "fta_pg",
     "stl_pg", "blk_pg", "tov_pg",
-    "usage_pct", "ts_pct_api", "reb_pct", "per", "bpm",
+    "usage_pct", "ts_pct_api", "ts_pct_computed", "reb_pct", "per", "bpm",
 ]
 
 _SET_CLAUSE = ",\n              ".join(

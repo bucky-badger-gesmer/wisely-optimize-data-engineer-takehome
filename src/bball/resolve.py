@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from bball.models import PlayerSeasonRecord, Source
+from bball.stats import true_shooting
 
 # Box-score splits: only RealGM carries these (the API has no splits).
 _REALGM_ONLY = [
@@ -59,7 +60,9 @@ def merge(
     """Pure merge of one player-season's per-source records.
 
     Returns (resolved, field_sources, conflicts):
-    - resolved: {field: winning_value} for every field in FIELD_PRIORITY
+    - resolved: {field: winning_value} for every field in FIELD_PRIORITY, plus
+      ts_pct_computed (derived from RealGM's own box score, not conflict-merged
+      like the other fields — see the bottom of this function)
     - field_sources: {field: {"source": ..., "updated_at": ...}} for the winner
     - conflicts: [{field, winner_source, winner_value, loser_source, loser_value}]
       for every OTHER source that had a differing non-None value, win or lose.
@@ -104,6 +107,14 @@ def merge(
                     "loser_source": source.value,
                     "loser_value": loser_value,
                 })
+
+    # Derived from RealGM's own box score (PTS/FGA/FTA) — internal consistency
+    # within one source, not a conflict-merged field, so no conflict logging.
+    realgm_rec = records.get(Source.REALGM)
+    resolved["ts_pct_computed"] = (
+        true_shooting(realgm_rec.pts_pg, realgm_rec.fga_pg, realgm_rec.fta_pg)
+        if realgm_rec is not None else None
+    )
 
     return resolved, field_sources, conflicts
 

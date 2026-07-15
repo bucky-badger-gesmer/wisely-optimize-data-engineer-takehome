@@ -8,6 +8,7 @@ from pathlib import Path
 from . import db
 from .load import run_ingest
 from .models import Source
+from .report import report_conflicts, report_ts
 
 # schema.sql lives at the repo root: src/bball/cli.py -> parents[2] == repo root.
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema.sql"
@@ -41,6 +42,14 @@ def ingest(source: str, data_dir: Path) -> None:
           f"| totals: conflicts={summary['conflicts_total']} rejections={summary['rejections_total']}")
 
 
+_REPORTS = {"ts": report_ts, "conflicts": report_conflicts}
+
+
+def report(kind: str) -> None:
+    with db.connect() as conn:
+        _REPORTS[kind](conn)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="bball")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -60,12 +69,17 @@ def main() -> None:
         "--data-dir", type=Path, default=Path("data"), help="root data directory (default: ./data)"
     )
 
+    p_report = sub.add_parser("report", help="print a verification/reconciliation report")
+    p_report.add_argument("kind", choices=list(_REPORTS), help="which report to run")
+
     args = parser.parse_args()
 
     if args.command == "init-db":
         init_db(reset=args.reset)
     elif args.command == "ingest":
         ingest(args.source, args.data_dir)
+    elif args.command == "report":
+        report(args.kind)
 
 
 if __name__ == "__main__":
