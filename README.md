@@ -46,6 +46,35 @@ uv run bball report conflicts                # cross-source reconciliation log
 uv run bball ingest live --replay data/live/ # bonus: replay the live game feed
 ```
 
+## Testing the live game feed (bonus)
+
+The replay above processes all five poll snapshots in one shot. To watch the
+box score evolve — and prove the idempotency and stale-poll safeguards — feed
+the snapshots in one at a time:
+
+```bash
+uv run bball ingest live data/live/snapshot_00.json
+uv run bball ingest live data/live/snapshot_01.json
+uv run bball ingest live data/live/snapshot_01.json   # same poll twice — no duplicate rows
+uv run bball ingest live data/live/snapshot_04.json   # jump ahead to the final
+uv run bball ingest live data/live/snapshot_02.json   # stale poll after final — ignored (updated_at safeguard)
+```
+
+Inspect the state between steps. Note the `-d bball` flag: the compose file
+creates the database as `bball`, so plain `psql -U postgres` lands in the
+empty default database and reports `relation "games" does not exist`:
+
+```bash
+docker compose exec db psql -U postgres -d bball -c "SELECT * FROM games;"
+docker compose exec db psql -U postgres -d bball -c "SELECT * FROM player_game_stats ORDER BY player_id;"
+```
+
+What to look for: `games` stays at one row whose score, period, and status
+advance with each snapshot; `player_game_stats` holds one row per player
+(10 total) that updates in place rather than accumulating duplicates; and
+after the `final` snapshot has been applied, replaying an older snapshot
+changes nothing.
+
 ## Tests
 
 ```bash
