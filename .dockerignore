@@ -1,0 +1,11 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+Dockerfile
+docker-compose.yml
+WALKTHROUGH.md
+implementation-plan.md
+research.md
