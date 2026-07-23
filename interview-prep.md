@@ -206,6 +206,18 @@ work pools, `retries=` / `retry_delay_seconds=` on tasks, concurrency limits
 (cap simultaneous DB-writing tasks), and that Prefect's observability pairs
 with Datadog rather than replacing it.
 
+**Deployment (the JD says you'll own it — have one concrete picture):** the
+takehome is already containerized end-to-end (Dockerfile + compose), and the
+production version of that picture is: the Django app and Prefect workers as
+containers on **ECS Fargate** (or App Runner for the app), images built and
+deployed by **GitHub Actions** on merge — the same CI that runs pytest against
+a Postgres service container; credentials in **Secrets Manager** (never env
+files); raw source payloads landed in **S3** — which is the AWS-native version
+of roadmap #4's staging story (S3 is the cheap immutable archive, staging
+tables are the queryable layer); Datadog agents on the containers. One line to
+say: "the compose file is the deployment story at takehome scale — every piece
+of it maps one-to-one onto ECS + RDS + S3."
+
 ---
 
 ## 4. The data layer under game-night load ⭐
@@ -406,7 +418,7 @@ experience rather than trivia.
 - **`ON CONFLICT` semantics** — the takehome's idempotency guarantee. Know the
   edges: requires a unique index/constraint as the arbiter; `DO UPDATE` can
   reference `excluded.*`; the conditional-update pattern
-  (`WHERE excluded.updated_at > tbl.updated_at`) is your stale-poll guard;
+  (`WHERE EXCLUDED.updated_at >= tbl.updated_at`) is your stale-poll guard;
   concurrent upserts on the same key serialize rather than error (unlike a
   naive SELECT-then-INSERT, which races).
 - **Isolation levels.** Read Committed is the default and is what your pipeline
@@ -434,7 +446,126 @@ experience rather than trivia.
 
 ---
 
-## 8. Portal cycle + basketball — the parts of the JD the takehome didn't touch
+## 8. Prefect primer — enough to talk shop, from zero
+
+You haven't used Prefect; they own it and the JD names it. The goal here is
+NOT to fake production experience — it's to (a) understand the mental model
+well enough to discuss orchestrating *your own pipeline* with it, and (b) be
+honest about the gap in a way that shows it's a week-one learning item, not a
+risk.
+
+### What it is, in one paragraph
+
+Prefect is a workflow orchestrator for Python: it runs your data jobs on
+schedules, retries them when they fail, records every run, and gives you a
+dashboard + alerting for all of it. Same category as Airflow and Dagster.
+Its pitch is that your pipeline stays *plain Python* — you decorate the
+functions you already have, rather than rewriting them into a framework's
+DAG structure.
+
+**The mental model, starting from cron** (this progression is your honest
+"have you used it?" answer — you've built the cron version in TypeScript):
+cron answers *when to run*; Prefect also answers *what happened* — did it
+fail at 3am and who noticed, which step failed, how do I retry just that
+step, how do I re-run last Tuesday with different parameters. If you've ever
+taken a scheduled job and added a retry loop, a "last successful run" row in
+the database, and a Slack webhook on failure, you hand-built roughly 60% of
+Prefect — say that (adapted to what you actually built), because it's honest
+about the tool gap while proving you understand why the tool exists. Just
+don't lead with "so it's basically cron" — to someone who operates it daily
+that undersells it; frame it as the progression instead: "cron is where
+everyone starts; Prefect is what you adopt once retries, run history, and
+alerting need to be someone's job other than yours."
+
+### The five words that carry every Prefect conversation
+
+| Term | What it means | In your project's terms |
+|---|---|---|
+| **Task** | One retryable step — a decorated Python function | `extract()` per adapter, the upsert step |
+| **Flow** | A pipeline — a function that calls tasks; the unit that gets scheduled and tracked | `run_ingest()`, `run_ingest_live()` |
+| **Deployment** | A flow + its schedule + where it runs. One flow can have several | "ingest API nightly at 3am", "live feed every 10s on game nights" |
+| **Work pool / worker** | *Where* flows execute — workers poll the pool for scheduled runs (theirs likely run on ECS) | the compose `web` container's production cousin |
+| **State** | What a run/task is doing: Pending → Running → Completed / Failed / Retrying — all visible in the UI | your CLI's exit code, but recorded, timestamped, and alertable |
+
+Second-tier vocabulary worth recognizing if they say it: **Prefect Cloud**
+(the hosted orchestration brain — key design point: *your code and data run
+on your own infrastructure; Cloud only sees metadata*), **automations**
+(alert rules: "if a flow fails, ping Slack"), **concurrency limits**
+(tag-based caps, e.g. at most N DB-writing tasks at once), **blocks**
+(stored config/credentials, e.g. a database connection).
+
+### How little your code would change (the point worth making)
+
+```python
+from prefect import flow, task
+
+@task(retries=3, retry_delay_seconds=30)   # network flakiness handled here
+def extract_source(source): ...
+
+@flow
+def ingest(sources: list[str]):            # this is run_ingest(), decorated
+    ...
+```
+
+Your talking point: "my adapters and `run_ingest` are already the right
+shape — pure functions with clear inputs — so Prefect adoption is decorators
+and deployments, not a rewrite. The CLI entry points basically *are* flows
+already."
+
+### The orchestration answer, assembled
+
+If asked "how would you run this under Prefect?", the shape is:
+
+- **Three deployments of the ingest flows:** API nightly; RealGM on its
+  scrape cadence; the live flow scheduled aggressively during game windows
+  only (or one long-running game-night flow that polls in a loop).
+- **Retries with backoff on the network-facing tasks** (adapter extracts);
+  *no* blind retries on the DB-write task — though since your writes are
+  idempotent, even a retried write is safe, which is exactly why idempotency
+  was the design goal (tie it back to §0).
+- **A concurrency limit on DB-writing tasks** so a backfill can't starve the
+  live feed's connections (ties to §4d).
+- **Failure automations → Slack**, and tasks emit metrics to **Datadog** —
+  Prefect tells you *the job* failed; Datadog watching the watermark table
+  tells you *the data* is stale. Both, because a job can "succeed" while
+  loading zero rows — that's why roadmap #2's watermark survives even with
+  Prefect in place. (This distinction — job health vs data health — is a
+  senior-sounding line; use it.)
+
+### vs Airflow, if they ask (one breath)
+
+Airflow predates it: heavier, DAGs as static config, a central scheduler,
+great ecosystem. Prefect is Python-native, dynamic (loops/branches are just
+Python), lighter to operate, hybrid-execution by design. Honest close:
+"the concepts — scheduled DAGs, retries, backfills, alerting — transfer
+one-to-one; I'd be productive in Prefect week one."
+
+### How to handle the experience question directly
+
+If asked "have you used Prefect?": don't bluff — the person across the table
+operates it daily and one follow-up exposes bluffing. The strong honest
+answer: name what you *have* used for the same job (cron/CI/another
+orchestrator — whatever's true), then demonstrate you've already mapped your
+pipeline onto their tool (the deployments sketch above). Knowing the shape
+of the answer before day one *is* the signal they're hiring for.
+
+### And Datadog, in one paragraph (the other tool they own)
+
+Datadog is the monitoring side: an **agent** runs on your servers/containers
+and ships three kinds of telemetry to one place — **metrics** (numbers over
+time: query latency, connection count, rows loaded), **logs**, and **traces**
+(APM — a request's journey through the app, so you can see *which* query made
+an endpoint slow). On top of those you build **dashboards** (things humans
+look at) and **monitors** (alert rules that page Slack/PagerDuty — things
+that look at themselves). Two phrases to use naturally: your pipeline emits
+**custom metrics** (`ingest.rows_loaded`, `ingest.last_success_age` — the §4e
+monitors are all custom metrics), and "dashboards are for diagnosis,
+monitors are for detection" — nobody stares at a dashboard at 2am, which is
+why every §4e item is a monitor, not a chart.
+
+---
+
+## 9. Portal cycle + basketball — the parts of the JD the takehome didn't touch
 
 **Portal cycle is their word for a load event that isn't game night** — the JD
 lists "portal cycle, preseason, conference play" as the high-usage periods. The
@@ -452,6 +583,12 @@ take on it unprompted shows you read their world:
   data model."
 - Preseason = bulk backfills and roster loads → the staging + batch-ID + replay
   story (roadmap #4).
+- Conference play = **every night is game night**: not a bigger spike but a
+  sustained grind, so the failure mode shifts from load to *operational
+  fatigue* — silent feed failures, creeping table bloat, alert noise. That's
+  why the §4e monitors are standing alarms, not dashboards someone has to
+  remember to check, and why idempotent replay matters: recovery from any
+  bad night is "re-run it," not a manual repair.
 
 **Basketball fluency.** The JD twice says "you love basketball" and points
 toward Basketball Operations long-term. Expect some version of "why basketball /
@@ -464,7 +601,7 @@ genuine beats polished here.
 
 ---
 
-## 9. The "you" questions — working style, growth, and how you built this
+## 10. The "you" questions — working style, growth, and how you built this
 
 - **Daily standup / "communicates and shows up."** Have one concrete example of
   surfacing a blocker early and one of a progress-communication habit (written
@@ -495,7 +632,7 @@ genuine beats polished here.
 
 ---
 
-## 10. Code-level probes — questions from someone who actually read your code
+## 11. Code-level probes — questions from someone who actually read your code
 
 If an interviewer opened the repo, these are the specific lines they'd ask
 about. Each is either a deliberate choice to defend or a small gap to own
@@ -544,7 +681,7 @@ before they name it.
 
 ---
 
-## 11. Final checklist before the call
+## 12. Final checklist before the call
 
 - [ ] Re-run the demo end-to-end once (`docker compose up --build`, curl both
       endpoints, `bball report ts`) so it's fresh if they screen-share.
@@ -562,15 +699,18 @@ before they name it.
       numbers (§7).
 - [ ] Skim the §7 depth drill the morning of — MVCC/HOT, `ON CONFLICT` edges,
       index types, EXPLAIN workflow.
-- [ ] Rehearse the **portal-cycle take** (§8) — it's the load question they
+- [ ] Read the **Prefect primer** (§8) twice — you can't cram production
+      experience, but you can walk in fluent in the five words (task, flow,
+      deployment, work pool, state) and the job-health-vs-data-health line.
+- [ ] Rehearse the **portal-cycle take** (§9) — it's the load question they
       live with that the takehome never asked about.
 - [ ] Settle your honest 60 seconds on **why basketball** and your answer to
-      **"how did you use AI tools on this?"** (§9).
+      **"how did you use AI tools on this?"** (§10).
 - [ ] Open `resolve.py` and `load.py` before the call and rehearse a 2-minute
       screen-share tour: FIELD_PRIORITY → waterfall → conflict logging →
-      the COALESCE + `field_sources ||` upsert (§10's partial-re-ingest
+      the COALESCE + `field_sources ||` upsert (§11's partial-re-ingest
       guarantee) → the `>=` stale-poll guard. If they ask to see code, you
       drive confidently instead of scrolling around.
-- [ ] Skim §10 so no one who read your code can surprise you with your own
+- [ ] Skim §11 so no one who read your code can surprise you with your own
       lines (the missing FK on `conflicts`, per-request connections in the
       views).
